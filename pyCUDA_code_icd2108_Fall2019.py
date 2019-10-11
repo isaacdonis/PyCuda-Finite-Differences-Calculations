@@ -1,0 +1,99 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# this is the version of the code that runs end to end but the outputs arent always matching.
+# despite this, this version is final
+
+import numpy as np
+import datetime
+import pycuda.autoinit # initialize the device
+import matplotlib.pyplot as plt
+from pycuda import driver, compiler, gpuarray, tools
+
+
+class cudaModule:
+
+	def __init__(self, idata):
+
+		# idata: an array of random numbers
+		# TODO: 
+		# Declare host variables
+		# Device memory allocation
+		# Kernel code
+
+		self.idata = idata # store the parameter that was passed in
+		self.idata_gpu = driver.mem_alloc(idata.nbytes) # specify where on the GPU memory should be sent
+
+		# this kernel code is the code that will actually execute on each thread within a block
+		self.kernel_code = """
+
+		__global__ void finite_difference(float *data, float *finite_diff)
+		{
+			int index = threadIdx.x; // get the location of the data in the thread
+			int length_of_array = sizeof(data)/sizeof(float); 
+
+			if(index != 0 && index != length_of_array)
+			{
+				finite_diff[index - 1] = (data[index - 1] + 2*data[index] + data[index + 1]) / 4;
+			}
+		}
+		"""
+
+	def runFinDiff_parallel(self): 
+
+		driver.memcpy_htod(self.idata_gpu, self.idata) # transfer the array from the host to the device
+
+		mod = compiler.SourceModule(self.kernel_code) # compile the function
+
+		# define the output data, which is the finite difference calculation
+		output = np.empty(len(self.idata) - 2).astype(np.float32) # the output size is one less than the input
+
+		# call and execute the function
+		the_function = mod.get_function("finite_difference")
+		the_function(driver.In(self.idata), driver.Out(output), block=(len(self.idata), 1, 1), grid=(1, 1))
+
+		return output
+
+	def runFinDiff_serial(self):
+
+		input_array = self.idata # get the input data
+		output = np.zeros(len(self.idata) - 2) # the output will have 2 less indicies as the input
+
+		for i in range(1, len(input_array) -1):
+
+			# calculate the finite difference using python
+			output[i-1] = (input_array[i-1] + 2*input_array[i] + input_array[i +1]) / 4
+
+		return output # return the python finite difference
+
+N = 25 # Number of random elements in the start array
+
+py_times = [] 
+parallel_times = []
+
+for i in range(1,40):
+
+	N = 25 * i # size of the array
+	np.random.seed(1)
+	random_array = np.random.randint(low=10, high=50, size=N).astype(np.float32)# create an array of size N and cast it to 32 bits
+	gpu_array = cudaModule(random_array)
+
+	py_start_time = datetime.datetime.now() # record the time right before it runs the serial operation
+	py_output = gpu_array.runFinDiff_serial() # run the serial operation
+	py_times.extend([(datetime.datetime.now() - py_start_time).total_seconds()]) # calculate how much time the serial operation took
+
+	gpu_start_time = datetime.datetime.now() # record the time right before it ran the operation in parallel
+	parallel_output = gpu_array.runFinDiff_parallel() # run the gpu calculation
+	parallel_times.extend([(datetime.datetime.now() - gpu_start_time).total_seconds()]) # calculate how many seconds the gpu calculation took
+
+	print 'py_output=\n', py_output # py_output is the output of your serial function
+	print 'parallel_output=\n', parallel_output # parallel_output is the output of your parallel function
+
+	print 'Code equality:\t', py_output==parallel_output
+	print 'string_len=', len(random_array), '\tpy_time: ', py_times[i-1], '\tparallel_time: ', parallel_times[i-1] # py_time is the running time of your serial function, parallel_time is the running time of your parallel function.
+
+
+plt.plot(py_times, 'ro', label='serial time')
+plt.plot(parallel_times, 'go', label='parallel time')
+plt.legend(fontsize="x-large") # using a named size
+plt.show()
